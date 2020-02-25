@@ -1,5 +1,6 @@
 package com.edgelab.reactornetty
 
+import mu.KotlinLogging
 import org.springframework.boot.autoconfigure.SpringBootApplication
 import org.springframework.boot.runApplication
 import org.springframework.core.env.AbstractEnvironment
@@ -10,7 +11,6 @@ import org.springframework.web.reactive.function.client.WebClient
 import reactor.core.publisher.Flux
 import reactor.core.publisher.Mono
 import reactor.kotlin.core.publisher.toMono
-import reactor.util.function.Tuple3
 import reactor.util.function.Tuples
 import java.nio.charset.Charset
 import kotlin.random.Random
@@ -37,28 +37,38 @@ class Controller {
 
 @Component
 class Client(private val builder: WebClient.Builder, private val environment: AbstractEnvironment) {
+    private val logger = KotlinLogging.logger {}
+
+    private val baseUrl: String by lazy {
+        val port = environment.getProperty("local.server.port")
+        "http://localhost:$port"
+    }
 
     private val webClient1: WebClient by lazy {
-        builder.baseUrl("http://localhost:${environment.getProperty("local.server.port")}/1").build()
+        builder.baseUrl("${baseUrl}/1").build()
     }
 
     private val webClient2: WebClient by lazy {
-        builder.baseUrl("http://localhost:${environment.getProperty("local.server.port")}/2").build()
+        builder.baseUrl("${baseUrl}/2").build()
     }
 
-    fun prematureCloseException(count: Int, bulkSize: Int): Flux<Any> {
+    fun prematureCloseException(count: Int): Flux<*> {
         return Flux.range(0, count)
             .flatMap { retrieve() }
             .map { Tuples.of(it.t1, it.t1, it.t1) }
-            .window(bulkSize).flatMap { bulk(it) }
+            .doOnError { throwable -> logger.error(throwable) { "error" } }
     }
 
-    fun notYetConnectedException(count: Int, bulkSize: Int): Flux<Any> {
+    fun notYetConnectedException(count: Int, bulkSize: Int = 500): Flux<*> {
         return requestOne()
             .flatMapMany { Flux.range(0, count) }
             .flatMap { retrieve() }
             .map { Tuples.of(it.t1, it.t1, it.t1) }
-            .window(bulkSize).flatMap { bulk(it) }
+            .window(bulkSize).flatMap {
+                it.collectList()
+                    .flatMap { requestOne() }
+            }
+            .doOnError { throwable -> logger.error(throwable) { "error" } }
     }
 
     private fun retrieve() = Mono.zip(requestOneOptionalResponse(), Mono.zip(
@@ -91,7 +101,4 @@ class Client(private val builder: WebClient.Builder, private val environment: Ab
         }
     }
 
-    private fun bulk(flux: Flux<Tuple3<String, String, String>>) =
-        flux.collectList()
-            .flatMap { requestOne() }
 }
